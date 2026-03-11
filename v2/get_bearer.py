@@ -48,7 +48,7 @@ def get_token():
         WebDriverWait(browser, 10).until(element_present)
         time.sleep(1)
     except TimeoutException:
-        print("Timed out waiting for Login Page to load")
+        logger.error("Timed out waiting for Login Page to load")
         browser.close()
 
     logger.info("entering username and password...")
@@ -90,6 +90,19 @@ def get_token():
     browser.find_element(By.ID, "submit-button").click()
     logger.info("Clicking submit...")
     time.sleep(10)
+
+    # Check if password change is required
+    time.sleep(3)
+    if "laptop" in browser.page_source.lower():
+        logger.warning("Password change required detected.")
+        from db import get_setting, set_setting
+        from functions import notify_user
+        import datetime
+        today = str(datetime.date.today())
+        last_notified = get_setting("last_password_change_notification")
+        if last_notified != today:
+            notify_user("Target SSO is requesting a password change.")
+            set_setting("last_password_change_notification", today)
 
     logger.success("Logged in successfully! Grabbing Bearer token")
     logs = browser.get_log("performance")

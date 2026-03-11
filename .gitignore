@@ -1,7 +1,6 @@
 /v2/config_file.py
 /*.md
 /.idea*
-/v2/config.cfg
 /v2/script.log
 /v2/shift_database.sqlite3
 /v2/token.json

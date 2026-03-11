@@ -88,7 +88,44 @@ Now we can put this token into our script.
 In the example, we're going to take the part of the URL that says ```REALLYLONGTOKEN``` and put it into the quotes. 
 It should look like this ```totp = pyotp.TOTP("REALLYLONGTOKEN")```
 
-Finally rename ```config_template.py``` to ```config_file.py``` 
+Finally rename ```config_template.py``` to ```config_file.py```
+
+# 1Password Integration (Optional)
+
+Instead of storing your credentials directly in `config_file.py`, you can pull them from 1Password automatically using the official Python SDK.
+
+## Setup
+
+1. **Create a Service Account** in 1Password:
+   - Go to [1password.com](https://1password.com) > Developer Tools > Service Accounts
+   - Create a new service account
+   - Grant it access to **only** the vault containing your Target login
+   - Copy the service account token (it's only shown once)
+
+2. **Install the SDK**:
+   ```bash
+   pip install onepassword-sdk
+   ```
+
+3. **Configure `config_file.py`**:
+   ```python
+   USE_1PASSWORD = True
+   OP_SERVICE_ACCOUNT_TOKEN = "your-service-account-token"
+   OP_EMPLOYEE_ID_REF = "op://YourVault/YourItem/username"
+   OP_PASSWORD_REF = "op://YourVault/YourItem/password"
+   OP_TOTP_SECRET_REF = "op://YourVault/YourItem/one-time password"
+   ```
+
+## Finding Your Secret References
+
+The format is `op://Vault/Item/Field` where:
+- **Vault** is the name of the vault (e.g., "Personal", "Automation")
+- **Item** is the name of the login entry (whatever you titled it)
+- **Field** is the field label — open the item in 1Password and check what each field is called. Common defaults are `username`, `password`, and `one-time password`
+
+## Security Tip
+
+Create a dedicated vault (e.g., "Automation") with only the Target login in it, then grant the service account access to just that vault. This way the service account can't access anything else in your 1Password account.
 
 # Lets start!
 Now that everything is setup. run ```pip install -r requirements.txt``` and it will install all the requirements needed!
