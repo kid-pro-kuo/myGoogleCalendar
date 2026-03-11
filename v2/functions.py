@@ -1,12 +1,11 @@
 import os
-import requests
 import datetime
+import requests
+from dataclasses import dataclass
+from fake_useragent import UserAgent
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from db import engine, SeenShift
-
-# Google Imports
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -14,7 +13,9 @@ from googleapiclient.discovery import build
 from loguru import logger
 
 import config_file
+from db import engine, SeenShift, get_setting, set_setting
 
+logger.add("script.log", rotation="500 MB")
 logger.info("Changing cwd to file path")
 os.chdir(os.path.dirname(__file__))
 
@@ -25,24 +26,114 @@ SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 if os.path.exists("token.json"):
     creds = Credentials.from_authorized_user_file("token.json", SCOPES)
-# If there are no (valid) credentials available, let the user log in.
 if not creds or not creds.valid:
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
     else:
         flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
         creds = flow.run_local_server(port=0)
-    # Save the credentials for the next run
     with open("token.json", "w") as token:
         token.write(creds.to_json())
 service = build("calendar", "v3", credentials=creds)
 
 
+@dataclass
 class Store:
-    def __init__(self):
-        self.address = ""
-        self.timezone_offset = "00:00:00"
-        self.store_id = "0000"
+    address: str = ""
+    timezone_offset: str = "00:00:00"
+    store_id: str = "0000"
+
+
+def get_schedule_headers():
+    ua = UserAgent()
+    return {
+        "User-Agent": ua.random,
+        "Upgrade-Insecure-Requests": "1",
+        "DNT": "1",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate",
+    }
+
+
+def get_auth_headers(bearer_token):
+    return {"Authorization": bearer_token}
+
+
+def get_posted_shifts_headers(bearer_token):
+    return {
+        "Authorization": bearer_token,
+        "Page-Origin": "AVAILABLE_SHIFTS",
+    }
+
+
+def _notify_login_failure(message):
+    """Send a login failure notification at most once per day."""
+    today = str(datetime.date.today())
+    last_notified = get_setting("last_login_failure_notification")
+    if last_notified == today:
+        logger.info("Login failure notification already sent today, skipping.")
+        return
+    notify_user(message)
+    set_setting("last_login_failure_notification", today)
+
+
+def validate_and_refresh_token():
+    """Read bearer token from db, validate it, refresh if needed. Returns (auth_headers, posted_shift_headers)."""
+    import get_bearer
+
+    bearer = get_setting("bearer")
+    auth_headers = get_auth_headers(bearer)
+    posted_headers = get_posted_shifts_headers(bearer)
+
+    logger.info("Testing previously used token.")
+    if test_token(auth_headers).status_code == 401:
+        logger.warning("Token invalid. Generating new token...")
+        try:
+            new_token = get_bearer.get_token()
+        except Exception as e:
+            logger.error(f"Failed to obtain new token: {e}")
+            _notify_login_failure(f"Login failed: {e}")
+            exit(-1)
+        logger.success("New Token obtained. Testing new token...")
+        auth_headers = get_auth_headers(new_token)
+        posted_headers = get_posted_shifts_headers(new_token)
+        if test_token(auth_headers).status_code == 400:
+            logger.success("New Token valid! Saving to database...")
+            set_setting("bearer", new_token)
+        else:
+            logger.error(f"New Token invalid! Status: {test_token(auth_headers).status_code}")
+            _notify_login_failure("Login failed: new bearer token was invalid after SSO login.")
+            exit(-1)
+    else:
+        logger.success("Existing Token valid!")
+
+    return auth_headers, posted_headers
+
+
+def get_week_ranges(num_weeks=4):
+    """Yield (start_date, end_date) tuples for num_weeks consecutive weeks starting from the current week."""
+    start = datetime.datetime.now()
+    start -= datetime.timedelta(start.weekday() + 1)
+    end = start + datetime.timedelta(6)
+
+    for i in range(num_weeks):
+        if i > 0:
+            start += datetime.timedelta(7)
+            end += datetime.timedelta(7)
+        yield start.date(), end.date()
+
+
+def check_api_response(response, context):
+    """Check API response status and exit with error details if not 200."""
+    if response.status_code != 200:
+        logger.error(f"{context} - Status: {response.status_code}")
+        logger.error(f"Response text: {response.text}")
+        try:
+            logger.error(f"Response JSON: {response.json()}")
+        except (ValueError, KeyError):
+            pass
+        exit(-2)
 
 
 def notify_user(message):
@@ -58,94 +149,53 @@ def notify_user(message):
             "message": message,
         },
     )
-    # try to notify the user, if it fails then log
     try:
         r.raise_for_status()
         logger.success("User Notified")
-    except:
+    except requests.HTTPError:
         logger.error(f"Notifying FAILED {r.text}")
 
 
-def check_cfg_file():
-    # This function will ensure that there is a configuration file, and if there isn't then it will generate one.
-    # This file will only be used to hold the bearer token
-    logger.info("Checking configuration file...")
-    cwd = os.getcwd()
-    # Get Current working directory
-    config_path = os.path.join(cwd, "config.cfg")
-    # Create path
-    if not os.path.isfile(config_path):
-        # Poke file to see if it exists.
-        logger.warning("Config file does not exist! Generating new...")
-        f = open("config.cfg", "a")
-        f.write(
-            """[DEFAULT]
-    Bearer = """
-        )
-        f.close()
-        # generate config file
-        logger.success("Config File Generated")
-    else:
-        logger.info("Config File already exists")
-
 
 def create_event(location, job_title, s_time, e_time):
-    # function to create events via Google Calendar
     event = {
         "summary": "Target",
         "location": location,
         "description": f"You are being requested to work a shift of {job_title}",
         "colorId": 11,
-        "start": {
-            "dateTime": s_time,
-        },
-        "end": {
-            "dateTime": e_time,
-        },
+        "start": {"dateTime": s_time},
+        "end": {"dateTime": e_time},
         "reminders": {
             "useDefault": False,
-            "overrides": [
-                {"method": "popup", "minutes": 45},
-            ],
+            "overrides": [{"method": "popup", "minutes": 45}],
         },
     }
-    # this sends the event to google, and You will know it is successful by seeing "Event Created:" in the console.
     event = service.events().insert(calendarId="primary", body=event).execute()
     logger.success("Event created: %s" % (event.get("htmlLink")))
 
 
 def get_current_timezone_offset():
-    # Get the host's timezone offset
     current_time = datetime.datetime.now()
-    current_timezone = datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
-    utc_offset = current_timezone.utcoffset(current_time).total_seconds() / 3600
-    offset = int(utc_offset)
-    # Simple logic to sort timezones to make google calendar happy.
-    if offset == 0:
-        offset = "-00:00"
-    elif offset <= -10:
-        offset = f"{offset}:00"
-    elif offset < 0:
-        offset = f"-0{offset * -1}:00"
-    else:
-        offset = f"-0{offset}:00"
+    tz = datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
+    offset_hours = int(tz.utcoffset(current_time).total_seconds() / 3600)
 
-    return offset
+    if offset_hours == 0:
+        return "+00:00"
+    elif offset_hours > 0:
+        return f"+{offset_hours:02d}:00"
+    else:
+        return f"-{abs(offset_hours):02d}:00"
 
 
 def get_store_info(store_id):
-    # Get store address and TimeZone offset
     r = requests.get(
         "https://redsky.target.com/redsky_aggregations/v1/web/store_location_v1"
         f"?store_id={store_id}"
         f"&key={config_file.API_KEY}",
-        headers=config_file.get_schedule_headers(),
+        headers=get_schedule_headers(),
     )
     s = Store()
-    # Initialize store object
-
     store_json = r.json()["data"]["store"]["mailing_address"]
-    # create object to reduce lines of code.
     s.address = (
         f"{store_json['address_line1']} {store_json['city']}, "
         f"{store_json['region']}, {store_json['postal_code']}"
@@ -155,19 +205,13 @@ def get_store_info(store_id):
     return s
 
 
-def call_wfm(
-    hdr,
-    start_date,
-    end_date,
-):
-    # Function to call and retrieve schedule.
-    # Start Date and end date format should be YYYY-MM-DD
+def call_wfm(hdr, start_date, end_date):
     url = (
         f"https://api.target.com/wfm_schedules/v1/weekly_schedules?"
         f"team_member_number=00{config_file.EMPLOYEE_ID}"
         f"&start_date={start_date}"
         f"&end_date={end_date}"
-        f"&location_id="  # Needs this flag for some reason.
+        f"&location_id="
         f"&key={config_file.API_KEY}"
     )
     logger.info(f"Calling WFM API: {url}")
@@ -176,17 +220,13 @@ def call_wfm(
     return r
 
 
-def call_available_shifts(
-    hdr,
-    start_date,
-    end_date,
-):
+def call_available_shifts(hdr, start_date, end_date):
     url = (
         f"https://api.target.com/wfm_available_shifts/v1/available_shifts?"
         f"worker_id={config_file.EMPLOYEE_ID}"
         f"&start_date={start_date}"
         f"&end_date={end_date}"
-        f"&location_ids=1375"  # Needs this flag for some reason.
+        f"&location_ids={config_file.STORE_NUMBER}"
         f"&key={config_file.API_KEY}"
     )
     logger.info(f"Calling Available Shifts API: {url}")
@@ -196,13 +236,15 @@ def call_available_shifts(
 
 
 def test_token(test_header):
-    # Function to test if Bearer token is valid
+    today = datetime.date.today()
+    start = today - datetime.timedelta(days=today.weekday())
+    end = start + datetime.timedelta(days=6)
     test_request = requests.get(
         f"https://api.target.com/wfm_schedules/v1/weekly_schedules?"
         f"team_member_number=00{config_file.EMPLOYEE_ID}"
-        "&start_date=2020-06-23"
-        "&end_date=2020-06-29"  # any date should work here, we're just making sure the key is valid
-        "&location_id="  # Needs this flag for some reason.
+        f"&start_date={start}"
+        f"&end_date={end}"
+        f"&location_id="
         f"&key={config_file.API_KEY}",
         headers=test_header,
     )

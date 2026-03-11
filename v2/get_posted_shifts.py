@@ -1,80 +1,22 @@
-import datetime
 import functions
-import get_bearer
-import config_file
-import configparser
 from loguru import logger
+
 
 def get_posted_shifts():
     logger.info("Starting get_posted_shifts function.")
-    logger.info("Reading Configuration file. ")
-    config = configparser.ConfigParser()
-    logger.info("Setting up store info object")
-    store_info = functions.Store()
-    config.read("config.cfg")
-    bearer = config["DEFAULT"]["Bearer"]
-    test_headers = config_file.get_auth_headers(bearer)
-    posted_shift_headers = config_file.get_posted_shifts_headers(bearer)
-    logger.info("Testing previously used token.")
-    # test the token.
-    if functions.test_token(test_headers).status_code == 401:
-        # 401 means that response was invalid
-        logger.warning("Token invalid. Generating new token...")
-        # get new token
-        new_token = get_bearer.get_token()
-        logger.success("New Token obtained. Testing new token...")
-        # set new header and test new token
-        headers = config_file.get_auth_headers(new_token)
-        posted_shift_headers = config_file.get_posted_shifts_headers(new_token)
-        if functions.test_token(headers).status_code == 400:
-            # This may seem weird at first, but we're just checking if it authenticated properly, not the actual API
-            logger.success("New Token valid! Updating configuration file...")
-            config["DEFAULT"]["Bearer"] = new_token
-            # Update the new config file.
-            with open("config.cfg", "w") as configfile:
-                config.write(configfile)
-        else:
-            logger.error(
-                f"ERROR! New Token Invalid! error {functions.test_token(headers).status_code}"
-            )
-            logger.error("New Token invalid! Exiting...")
-            exit(-1)
-
-    logger.success("Existing Token valid!")
-    # Now everything is verified and is working properly, we can start to work+
+    _, posted_shift_headers = functions.validate_and_refresh_token()
 
     logger.info("Starting API calls for available shifts.")
-
-    start_week_obj = datetime.datetime.now()
-    start_week_obj -= datetime.timedelta(start_week_obj.weekday() + 1)
-    end_week_obj = start_week_obj + datetime.timedelta(6)
-    # These date time objects allow us to easily move between calendar dates
-
-    for i in range(4):
-        # 4 to check 4 weeks of data
-        if i > 0:
-            start_week_obj += datetime.timedelta(7)
-            end_week_obj += datetime.timedelta(7)
-        logger.info(f"Fetching available shifts for {start_week_obj.date()} to {end_week_obj.date()}")
-        call = functions.call_available_shifts(
-            posted_shift_headers, start_week_obj.date(), end_week_obj.date()
-        )
-        # call and check the results
-        if call.status_code != 200:
-            logger.error(f"Available Shifts API error for date range {start_week_obj.date()} to {end_week_obj.date()}")
-            logger.error(f"Status code: {call.status_code}")
-            logger.error(f"Response text: {call.text}")
-            try:
-                logger.error(f"Response JSON: {call.json()}")
-            except:
-                pass
-            exit(-2)
+    for start_date, end_date in functions.get_week_ranges():
+        logger.info(f"Fetching available shifts for {start_date} to {end_date}")
+        call = functions.call_available_shifts(posted_shift_headers, start_date, end_date)
+        functions.check_api_response(call, f"Available Shifts API error for {start_date} to {end_date}")
         call_json = call.json()
 
-        if not len(call_json["available_shifts"]):
+        if not call_json["available_shifts"]:
             logger.info("No available shifts found.")
             continue
-        logger.success(f"Shifts found!")
+        logger.success("Shifts found!")
 
         for shift in call_json["available_shifts"]:
             functions.seen_or_record(shift)
