@@ -1,3 +1,4 @@
+import datetime
 import functions
 from loguru import logger
 
@@ -36,13 +37,16 @@ def start_get_schedule():
                     job_title = f'{job_title} and {temp.split("/")[-1]}'
             logger.success(f"Shifts found! {job_title}")
 
-            shift_start = f"{segment['segment_start'][:10]}T{segment['segment_start'][-8:]}{store_info.timezone_offset}"
-            shift_end = f"{segment['segment_end'][:10]}T{segment['segment_end'][-8:]}{store_info.timezone_offset}"
             full_date = schedule["schedule_date"]
+            shift_date = datetime.date.fromisoformat(full_date)
+            tz_offset = functions.get_timezone_offset(store_info.timezone, shift_date)
+
+            shift_start = f"{segment['segment_start'][:10]}T{segment['segment_start'][-8:]}{tz_offset}"
+            shift_end = f"{segment['segment_end'][:10]}T{segment['segment_end'][-8:]}{tz_offset}"
             description = f"You are being requested to work a shift of {job_title}"
 
-            search_start = f"{full_date}T00:00:00{store_info.timezone_offset}"
-            search_end = f"{full_date}T23:59:00{store_info.timezone_offset}"
+            search_start = f"{full_date}T00:00:00{tz_offset}"
+            search_end = f"{full_date}T23:59:00{tz_offset}"
             events_result = (
                 functions.service.events()
                 .list(
@@ -70,6 +74,12 @@ def start_get_schedule():
                     break
                 else:
                     logger.warning("Existing item found but with differences... Updating...")
+                    if event["start"]["dateTime"] != shift_start:
+                        logger.warning(f"  Start time: GCal='{event['start']['dateTime']}' vs API='{shift_start}'")
+                    if event["end"]["dateTime"] != shift_end:
+                        logger.warning(f"  End time: GCal='{event['end']['dateTime']}' vs API='{shift_end}'")
+                    if event.get("description") != description:
+                        logger.warning(f"  Description: GCal='{event.get('description')}' vs API='{description}'")
                     functions.notify_user(f"Shift Modification on {full_date} for {job_title}")
                     event["description"] = description
                     event["start"]["dateTime"] = shift_start

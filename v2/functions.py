@@ -40,7 +40,7 @@ service = build("calendar", "v3", credentials=creds)
 @dataclass
 class Store:
     address: str = ""
-    timezone_offset: str = "00:00:00"
+    timezone: str = ""
     store_id: str = "0000"
 
 
@@ -174,17 +174,19 @@ def create_event(location, job_title, s_time, e_time):
     logger.success("Event created: %s" % (event.get("htmlLink")))
 
 
-def get_current_timezone_offset():
-    current_time = datetime.datetime.now()
-    tz = datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo
-    offset_hours = int(tz.utcoffset(current_time).total_seconds() / 3600)
+def get_timezone_offset(iana_timezone, target_date=None):
+    """Get the UTC offset for a given date and IANA timezone, correctly accounting for DST."""
+    from zoneinfo import ZoneInfo
 
-    if offset_hours == 0:
-        return "+00:00"
-    elif offset_hours > 0:
-        return f"+{offset_hours:02d}:00"
-    else:
-        return f"-{abs(offset_hours):02d}:00"
+    tz = ZoneInfo(iana_timezone)
+    if target_date is None:
+        target_date = datetime.date.today()
+    dt = datetime.datetime(target_date.year, target_date.month, target_date.day, 12, tzinfo=tz)
+    total_seconds = int(dt.utcoffset().total_seconds())
+    hours, remainder = divmod(abs(total_seconds), 3600)
+    minutes = remainder // 60
+    sign = "+" if total_seconds >= 0 else "-"
+    return f"{sign}{hours:02d}:{minutes:02d}"
 
 
 def get_store_info(store_id):
@@ -195,13 +197,15 @@ def get_store_info(store_id):
         headers=get_schedule_headers(),
     )
     s = Store()
-    store_json = r.json()["data"]["store"]["mailing_address"]
+    store_data = r.json()["data"]["store"]
+    store_json = store_data["mailing_address"]
     s.address = (
         f"{store_json['address_line1']} {store_json['city']}, "
         f"{store_json['region']}, {store_json['postal_code']}"
     )
-    s.timezone_offset = get_current_timezone_offset()
+    s.timezone = store_data["geographic_specifications"]["iso_time_zone_code"]
     s.store_id = store_id
+    logger.info(f"Store {store_id} timezone: {s.timezone}")
     return s
 
 
