@@ -1,3 +1,5 @@
+#!/opt/scripts/myGoogleCalendar/v2/.venv/bin/python
+
 def get_token():
     import json
     import time
@@ -36,8 +38,20 @@ def get_token():
     # options.add_argument("--disable-infobars")
     # options.add_argument("--disable-setuid-sandbox")
 
-    # logger.success("Arguments setup! Starting ChromeDriver")
-    browser = uc.Chrome(use_subprocess=True, options=options, service=service)
+    # Detect Chrome version to avoid ChromeDriver version mismatch
+    import subprocess
+    import re
+    version_main = None
+    try:
+        chrome_version_out = subprocess.check_output(["google-chrome", "--version"]).decode("utf-8")
+        match = re.search(r"Google Chrome (\d+)", chrome_version_out)
+        if match:
+            version_main = int(match.group(1))
+            logger.info(f"Detected Chrome major version: {version_main}")
+    except Exception as e:
+        logger.warning(f"Could not automatically detect Chrome version: {e}")
+
+    browser = uc.Chrome(use_subprocess=True, options=options, service=service, version_main=version_main)
     logger.success("ChromeDriver Setup! Starting")
 
     # navigate to a website
@@ -57,22 +71,33 @@ def get_token():
     # This finds the login and the password box
     logger.info("Entering Username")
     username.click()
+    username.clear()
     username.send_keys(config_file.EMPLOYEE_ID)
-    username.send_keys(Keys.TAB)
 
     logger.info("Entering Password")
-    username.click()
-    password.send_keys(config_file.PASSWORD)
     password.click()
+    password.clear()
+    password.send_keys(config_file.PASSWORD)
 
     logger.info("Pressing Submit")
     login_button = browser.find_element(By.ID, "submit-button")
-    login_button.submit()
-    time.sleep(2)
-    mfa_button = browser.find_element(
-        By.XPATH, '//*[contains(text(), "Authenticator")]'
-    )
-    mfa_button.click()
+    login_button.click()
+
+    logger.info("Waiting for MFA selection page...")
+    try:
+        mfa_xpath = '//*[contains(translate(text(), "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "authenticator")]'
+        element_present = ec.element_to_be_clickable((By.XPATH, mfa_xpath))
+        mfa_button = WebDriverWait(browser, 15).until(element_present)
+        mfa_button.click()
+        logger.success("Clicked MFA Authenticator button")
+    except TimeoutException:
+        screenshot_path = "mfa_timeout.png"
+        html_path = "mfa_timeout.html"
+        browser.save_screenshot(screenshot_path)
+        with open(html_path, "w") as f:
+            f.write(browser.page_source)
+        logger.error(f"Timed out waiting for Authenticator button. Saved screenshot to {screenshot_path} and HTML to {html_path}")
+        raise
 
     try:
         element_present = ec.presence_of_element_located((By.ID, "totp-code"))

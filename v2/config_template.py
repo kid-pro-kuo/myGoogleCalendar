@@ -1,3 +1,5 @@
+#!/opt/scripts/myGoogleCalendar/v2/.venv/bin/python
+
 import pyotp
 
 # --- Credential Source ---

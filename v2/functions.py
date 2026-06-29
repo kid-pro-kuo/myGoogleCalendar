@@ -1,3 +1,5 @@
+#!/opt/scripts/myGoogleCalendar/v2/.venv/bin/python
+
 import os
 import datetime
 import requests
@@ -189,23 +191,57 @@ def get_timezone_offset(iana_timezone, target_date=None):
     return f"{sign}{hours:02d}:{minutes:02d}"
 
 
+KNOWN_STORES = {
+    "1964": {
+        "address": "1275 Caroline St NE, Atlanta, GA 30307",
+        "timezone": "America/New_York"
+    }
+}
+
+
 def get_store_info(store_id):
-    r = requests.get(
-        "https://redsky.target.com/redsky_aggregations/v1/web/store_location_v1"
-        f"?store_id={store_id}"
-        f"&key={config_file.API_KEY}",
-        headers=get_schedule_headers(),
-    )
     s = Store()
-    store_data = r.json()["data"]["store"]
-    store_json = store_data["mailing_address"]
-    s.address = (
-        f"{store_json['address_line1']} {store_json['city']}, "
-        f"{store_json['region']}, {store_json['postal_code']}"
-    )
-    s.timezone = store_data["geographic_specifications"]["iso_time_zone_code"]
     s.store_id = store_id
-    logger.info(f"Store {store_id} timezone: {s.timezone}")
+    
+    # Default/fallback values
+    s.address = "Unknown Address"
+    s.timezone = "America/New_York"
+
+    if store_id in KNOWN_STORES:
+        s.address = KNOWN_STORES[store_id]["address"]
+        s.timezone = KNOWN_STORES[store_id]["timezone"]
+        logger.info(f"Using known store info for {store_id} (timezone: {s.timezone})")
+        return s
+
+    logger.info(f"Attempting to fetch store info for {store_id} from API...")
+    try:
+        r = requests.get(
+            "https://redsky.target.com/redsky_aggregations/v1/web/store_location_v1"
+            f"?store_id={store_id}"
+            f"&key={config_file.API_KEY}",
+            headers=get_schedule_headers(),
+            timeout=5
+        )
+        if r.status_code == 200:
+            store_data = r.json()["data"]["store"]
+            store_json = store_data["mailing_address"]
+            s.address = (
+                f"{store_json['address_line1']} {store_json['city']}, "
+                f"{store_json['region']}, {store_json['postal_code']}"
+            )
+            s.timezone = store_data["geographic_specifications"]["iso_time_zone_code"]
+            logger.info(f"Successfully fetched store {store_id} timezone: {s.timezone}")
+        else:
+            logger.warning(
+                f"Failed to fetch store info for {store_id} from API (status {r.status_code}). "
+                f"Using default timezone: {s.timezone}"
+            )
+    except Exception as e:
+        logger.warning(
+            f"Error fetching store info for {store_id}: {e}. "
+            f"Using default timezone: {s.timezone}"
+        )
+        
     return s
 
 

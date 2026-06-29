@@ -1,3 +1,7 @@
+.*
+!.gitignore
+/v2/__pycache__/
+/v2/.venv/
 /v2/config_file.py
 /*.md
 /.idea*

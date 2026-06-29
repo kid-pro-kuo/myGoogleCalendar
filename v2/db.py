@@ -1,3 +1,5 @@
+#!/opt/scripts/myGoogleCalendar/v2/.venv/bin/python
+
 from sqlalchemy import create_engine, select, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session
 

@@ -1,3 +1,5 @@
+#!/opt/scripts/myGoogleCalendar/v2/.venv/bin/python
+
 import get_schedule
 import get_posted_shifts
 import config_file
