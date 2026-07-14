@@ -114,10 +114,21 @@ def get_token():
 
     browser.find_element(By.ID, "submit-button").click()
     logger.info("Clicking submit...")
-    time.sleep(10)
+    
+    # Dynamically wait for the dashboard page to load or password change prompt to appear
+    logger.info("Waiting for dashboard to load...")
+    try:
+        WebDriverWait(browser, 30).until(
+            lambda driver: "team-member/home" in driver.current_url or 
+                           any(txt in driver.page_source for txt in ["Welcome", "Next Shift", "Home"]) or
+                           "laptop" in driver.page_source.lower()
+        )
+        logger.success("Dashboard page loaded!")
+    except TimeoutException:
+        logger.warning("Timed out waiting for dashboard. Checking page source anyway...")
 
     # Check if password change is required
-    time.sleep(3)
+    time.sleep(2)
     if "laptop" in browser.page_source.lower():
         logger.warning("Password change required detected.")
         from db import get_setting, set_setting
@@ -135,12 +146,13 @@ def get_token():
         if "Bearer " in str(entry["message"]):
             json_message_data = json.loads(str(entry["message"]))
 
-            # Try to extract Bearer token from request headers
+            # Try to extract Bearer token from request headers (case-insensitive key match)
             try:
                 if "request" in json_message_data["message"]["params"]:
                     request_headers = json_message_data["message"]["params"]["request"].get("headers", {})
-                    if "Authorization" in request_headers:
-                        authorization_json = request_headers["Authorization"]
+                    auth_key = next((k for k in request_headers if k.lower() == "authorization"), None)
+                    if auth_key:
+                        authorization_json = request_headers[auth_key]
                         if "Bearer " in authorization_json:
                             logger.success("Bearer obtained from request headers! Closing...")
                             browser.close()
@@ -148,12 +160,13 @@ def get_token():
             except (KeyError, TypeError):
                 pass
 
-            # Try to extract Bearer token from response headers
+            # Try to extract Bearer token from response headers (case-insensitive key match)
             try:
                 if "response" in json_message_data["message"]["params"]:
                     response_headers = json_message_data["message"]["params"]["response"].get("headers", {})
-                    if "Authorization" in response_headers:
-                        authorization_json = response_headers["Authorization"]
+                    auth_key = next((k for k in response_headers if k.lower() == "authorization"), None)
+                    if auth_key:
+                        authorization_json = response_headers[auth_key]
                         if "Bearer " in authorization_json:
                             logger.success("Bearer obtained from response headers! Closing...")
                             browser.close()
@@ -165,3 +178,4 @@ def get_token():
     logger.error("Failed to extract Bearer token from logs")
     browser.close()
     raise Exception("Could not find Bearer token in browser logs")
+
